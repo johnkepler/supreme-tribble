@@ -50,11 +50,29 @@ python rfdetr_to_coreml.py weights.pt \
     --variant small \
     --resolution 640 \ # MUST match the resolution the model was trained at
     --num-classes 7 \
+    --class-names "person,bicycle,car,motorcycle,bus,truck,dog" \
     --deployment-target iOS16 \
     --image-name image --boxes-name boxes --logits-name logits
 ```
 
 Run `python rfdetr_to_coreml.py --help` for the full flag list.
+
+### Class labels
+
+If the checkpoint records class names (the standard Roboflow training flow stores
+them in `args["class_names"]`), they're read automatically and embedded in the
+`.mlpackage` metadata. If your checkpoint doesn't have them, pass them explicitly
+in logit order (background excluded):
+
+```bash
+python rfdetr_to_coreml.py weights.pt \
+    --class-names "person,bicycle,car"
+```
+
+The count is cross-checked against `num_classes`; on a mismatch the tool warns and
+skips embedding rather than ship wrong labels. Embedded names land under the
+metadata key `classes` (comma-joined), readable on-device via
+`MLModel.modelDescription.metadata[.creatorDefinedKey]`.
 
 ### Important: resolution must match training
 

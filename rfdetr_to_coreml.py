@@ -114,6 +114,26 @@ def infer_num_classes(weights: Path) -> int | None:
     return None
 
 
+def infer_class_names(weights: Path) -> list[str] | None:
+    """Read training class names from the checkpoint args, if recorded.
+
+    The standard RF-DETR / Roboflow training flow stores `args["class_names"]`,
+    ordered to match logit indices 1..N (index 0 is the background slot). Custom
+    training paths may leave it unset -> returns None.
+    """
+    try:
+        ck = torch.load(str(weights), map_location="cpu", weights_only=False)
+    except Exception:
+        return None
+    if not isinstance(ck, dict):
+        return None
+    train_args = ck.get("args")
+    names = train_args.get("class_names") if isinstance(train_args, dict) else None
+    if isinstance(names, (list, tuple)) and len(names) > 0:
+        return [str(n) for n in names]
+    return None
+
+
 def _register_scalar_cast_ops() -> None:
     """Re-lower torch `int()` / `bool()` so they emit a rank-0 MIL value.
 
@@ -230,7 +250,7 @@ class _Wrap(torch.nn.Module):
 
 def convert(weights: Path, out: Path, variant: str, resolution: int, num_classes: int,
             deploy_target, image_name: str, boxes_name: str, logits_name: str,
-            verify: bool) -> None:
+            verify: bool, class_names: list[str] | None = None) -> None:
     _register_scalar_cast_ops()
     model_cls, _ = _resolve_variant(variant)
 
@@ -309,6 +329,11 @@ def convert(weights: Path, out: Path, variant: str, resolution: int, num_classes
         f"'{boxes_name}'=cxcywh norm [0,1]; '{logits_name}' pre-sigmoid "
         f"({num_classes + 1}-wide, idx0=background)."
     )
+    if class_names:
+        # Labels for logit indices 1..N (index 0 is background). Comma-joined so
+        # iOS can read them via MLModel.modelDescription.metadata[.creatorDefinedKey].
+        mlmodel.user_defined_metadata["classes"] = ",".join(class_names)
+        print(f"[export] embedded {len(class_names)} class label(s) in metadata['classes']")
     out.parent.mkdir(parents=True, exist_ok=True)
     mlmodel.save(str(out))
     print(f"[export] saved {out}")
@@ -319,6 +344,9 @@ def convert(weights: Path, out: Path, variant: str, resolution: int, num_classes
         spec = loaded.get_spec()
         print("  inputs :", [(i.name, i.type.WhichOneof("Type")) for i in spec.description.input])
         print("  outputs:", [o.name for o in spec.description.output])
+        embedded = loaded.user_defined_metadata.get("classes")
+        if embedded:
+            print(f"  classes: {embedded}")
         from PIL import Image
         img = Image.fromarray((np.random.rand(resolution, resolution, 3) * 255).astype(np.uint8))
         pred = loaded.predict({image_name: img})
@@ -341,6 +369,10 @@ def main() -> int:
                    help="input resolution; must match training (default: the variant's native resolution)")
     p.add_argument("--num-classes", type=int, default=None,
                    help="trained class count (default: inferred from the checkpoint's class head)")
+    p.add_argument("--class-names", default=None,
+                   help="comma-separated class names in logit order, background excluded "
+                        "(default: read from the checkpoint if recorded). Embedded in the "
+                        ".mlpackage metadata under 'classes'.")
     p.add_argument("--deployment-target", choices=sorted(_DEPLOY_TARGETS), default="iOS16",
                    help="minimum CoreML deployment target")
     p.add_argument("--image-name", default="image", help="name of the image input feature")
@@ -374,6 +406,24 @@ def main() -> int:
             return 1
         print(f"[info] inferred num_classes={num_classes} from the checkpoint class head")
 
+    # Class names: explicit flag wins, else read from the checkpoint. Cross-check
+    # the count against num_classes — a mismatch means the labels are wrong, so
+    # warn and drop them rather than embed misleading metadata.
+    if args.class_names is not None:
+        class_names = [s.strip() for s in args.class_names.split(",") if s.strip()]
+        names_source = "--class-names"
+    else:
+        class_names = infer_class_names(args.weights)
+        names_source = "checkpoint args"
+    if class_names is not None:
+        if len(class_names) != num_classes:
+            print(f"[warn] {len(class_names)} class name(s) from {names_source} != "
+                  f"num_classes={num_classes}; not embedding labels (align --class-names / "
+                  f"--num-classes to fix)", file=sys.stderr)
+            class_names = None
+        else:
+            print(f"[info] class names ({names_source}): {', '.join(class_names)}")
+
     out = args.output or args.weights.with_suffix(".mlpackage")
 
     convert(
@@ -387,6 +437,7 @@ def main() -> int:
         boxes_name=args.boxes_name,
         logits_name=args.logits_name,
         verify=not args.no_verify,
+        class_names=class_names,
     )
     return 0
 
