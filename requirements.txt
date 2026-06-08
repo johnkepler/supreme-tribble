@@ -1,0 +1,13 @@
+# RF-DETR -> CoreML converter dependencies.
+#
+# numpy MUST stay below 2.4 — numpy 2.4 breaks coremltools' CoreML export.
+# Tested combo: Python 3.13, torch 2.7, coremltools 9.0, numpy 2.3.x.
+numpy>=2.0,<2.4
+torch==2.7.*
+torchvision==0.22.*
+coremltools==9.0
+pillow
+
+# RF-DETR itself. Pinned PyPI release; or install from a local checkout with
+# `pip install -e /path/to/rf-detr` if you need a specific commit.
+rfdetr

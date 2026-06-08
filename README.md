@@ -1,0 +1,98 @@
+# rfdetr-to-coreml
+
+Convert [RF-DETR](https://github.com/roboflow/rf-detr) PyTorch weights
+(`weights.pt`) into a native CoreML `.mlpackage` that runs on the Apple Neural
+Engine / GPU.
+
+RF-DETR ships an ONNX exporter but no CoreML one (Roboflow's hosted CoreML export
+is a paid feature). Running the ONNX model on-device through ONNX-Runtime's CoreML
+execution provider strands the deformable-attention decoder on the CPU (~1–2 fps).
+This tool produces a **native** CoreML mlprogram instead, so Core ML can place the
+backbone and decoder on the ANE/GPU — a legitimate real-time path (~15 fps on an A17).
+
+The hard part is the deformable-attention decoder, which `coremltools` can't trace
+as-is. The converter applies four trace-time patches (a rank-safe attention
+rewrite using `grid_sample`, safe `int`/`bool` casts, antialias-off interpolation,
+and a flattened `meshgrid`) and **numerically validates** the rewritten attention
+against the stock forward (max|Δ| < 1e-3) before converting — so the export is
+faithful.
+
+## Install
+
+numpy **must** stay below 2.4 (2.4 breaks coremltools' CoreML export). Tested on
+Python 3.13, torch 2.7, coremltools 9.0.
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+If you need a specific RF-DETR commit, install it editable from a local checkout
+instead of the PyPI pin: `pip install -e /path/to/rf-detr`.
+
+## Usage
+
+For a standard RF-DETR **Small** checkpoint, just pass the weights — variant
+defaults to `small`, resolution to the variant's native size, and `num_classes`
+is inferred from the checkpoint's class head:
+
+```bash
+python rfdetr_to_coreml.py path/to/weights.pt
+# -> writes path/to/weights.mlpackage
+```
+
+Full control:
+
+```bash
+python rfdetr_to_coreml.py weights.pt \
+    --output models/detector.mlpackage \
+    --variant small \
+    --resolution 640 \ # MUST match the resolution the model was trained at
+    --num-classes 7 \
+    --deployment-target iOS16 \
+    --image-name image --boxes-name boxes --logits-name logits
+```
+
+Run `python rfdetr_to_coreml.py --help` for the full flag list.
+
+### Important: resolution must match training
+
+`--resolution` defaults to the variant's *native* config resolution (Nano 384,
+Small 512, Medium 576, Large 704). If you trained at a different resolution
+(e.g. Small fine-tuned at 640), you **must** pass the value you trained with
+— otherwise the position embeddings mismatch and detections degrade.
+The checkpoint does not record this, so the tool can't infer it.
+
+## Output contract
+
+| Feature  | Kind   | Shape                        | Meaning |
+|----------|--------|------------------------------|---------|
+| `image`  | image  | `1×3×R×R` RGB                 | Feed raw `[0,255]` pixels. The graph bakes in `scale=1/255` + ImageNet normalization. |
+| `boxes`  | tensor | `1×num_queries×4`            | `cxcywh`, normalized `[0,1]`. |
+| `logits` | tensor | `1×num_queries×(num_classes+1)` | Pre-sigmoid. Index 0 is the background/placeholder slot. |
+
+This is the same I/O as RF-DETR's ONNX export, so existing post-processing
+(sigmoid → per-query top class → threshold → cxcywh→xyxy) decodes either format.
+Output feature names are configurable via the `--*-name` flags.
+
+## Supported variants
+
+`nano`, `small`, `medium`, `base`, `large` via `--variant`.
+
+**Limitation:** the rank-safe attention rewrite is specialized for single-scale
+decoders (`n_levels == 1`), which covers **Nano and Small**. Multi-scale variants
+raise a clear error rather than emitting a silently-wrong model. Extending to
+multi-scale means generalizing `_single_scale_deform_attn_forward` to loop over levels.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+The single-scale deformable-attention specialization is derived from RF-DETR's
+own Apache-2.0 implementation (`MSDeformAttn.forward` /
+`ms_deform_attn_core_pytorch`, itself from LW-DETR and Deformable DETR); see
+NOTICE for full attribution. The CoreML conversion approach was independently
+implemented against the public coremltools APIs. The
+[iacomus/roboflow-weedcrop-edge-demo](https://github.com/iacomus/roboflow-weedcrop-edge-demo)
+project demonstrates the same approach and is acknowledged as prior art.

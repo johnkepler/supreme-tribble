@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Model artifacts (converter inputs/outputs — large binaries, not source)
+*.mlpackage/
+*.mlmodel
+*.mlmodelc/
+*.pt
+*.onnx

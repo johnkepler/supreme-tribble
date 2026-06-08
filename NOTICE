@@ -1,0 +1,36 @@
+rfdetr-to-coreml
+Copyright (c) 2026 John Kepler
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------------
+Third-party attributions
+------------------------------------------------------------------------------
+
+The single-scale deformable-attention specialization in rfdetr_to_coreml.py
+(`_single_scale_deform_attn_forward`) is derived from the deformable-attention
+implementation in RF-DETR, and reuses RF-DETR's `_bilinear_grid_sample`:
+
+    RF-DETR
+    Copyright (c) 2025 Roboflow. All Rights Reserved.
+    Licensed under the Apache License, Version 2.0.
+    https://github.com/roboflow/rf-detr
+
+RF-DETR's implementation is itself derived from LW-DETR and Deformable DETR:
+
+    LW-DETR
+    Copyright (c) 2024 Baidu. All Rights Reserved.
+    Licensed under the Apache License, Version 2.0.
+    https://github.com/Atten4Vis/LW-DETR
+
+    Deformable DETR
+    Copyright (c) 2020 SenseTime. All Rights Reserved.
+    Licensed under the Apache License, Version 2.0.
+    https://github.com/fundamentalvision/Deformable-DETR
+
+The CoreML conversion approach (baking ImageNet normalization into the graph,
+the rank-0 scalar-cast op overrides, and the antialias-off interpolation /
+flattened-meshgrid trace patches) was independently implemented against the
+public coremltools APIs. The iacomus/roboflow-weedcrop-edge-demo project
+demonstrates the same approach and is acknowledged as prior art, but no code
+from it is included here.
