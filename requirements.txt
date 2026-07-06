@@ -9,7 +9,7 @@ numpy==2.3.5
 torch==2.7.1
 torchvision==0.22.1
 coremltools==9.0
-pillow==11.3.0
+pillow==12.2.0
 
 # RF-DETR itself. The converter monkeypatches rfdetr internals (e.g.
 # rfdetr.models.ops...), so keep this pinned to a validated release and re-run an
