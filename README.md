@@ -103,6 +103,8 @@ decoders (`n_levels == 1`), which covers **Nano and Small**. Multi-scale variant
 raise a clear error rather than emitting a silently-wrong model. Extending to
 multi-scale means generalizing `_single_scale_deform_attn_forward` to loop over levels.
 
+**Note:** If you want to convert all variants incl. Medium/Base/Large, check out this recent repo: landchenxuan/rf-detr-to-coreml
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
