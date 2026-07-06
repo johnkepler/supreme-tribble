@@ -14,3 +14,17 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # The CoreML export toolchain is pinned deliberately — these bounds stop
+      # Dependabot from proposing bumps that break conversion (it can't know that).
+      # coremltools 9.0 is the validated frontend; hold it entirely.
+      - dependency-name: "coremltools"
+      # numpy >= 2.4 breaks coremltools' export.
+      - dependency-name: "numpy"
+        versions: [">=2.4.0"]
+      # torch/torchvision held at the coremltools-9.0-compatible 2.7 line
+      # (patch updates within 2.7 / 0.22 are still allowed).
+      - dependency-name: "torch"
+        versions: [">=2.8.0"]
+      - dependency-name: "torchvision"
+        versions: [">=0.23.0"]
