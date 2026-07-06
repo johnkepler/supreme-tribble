@@ -1,0 +1,16 @@
+# Dependabot: weekly dependency-update checks for the pip requirements.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # Batch low-risk minor/patch bumps into a single PR to cut noise; major
+      # updates still open their own PR so they get individual review.
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"

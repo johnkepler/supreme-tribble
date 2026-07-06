@@ -1,13 +1,26 @@
-# RF-DETR -> CoreML converter dependencies.
+# RF-DETR -> CoreML converter dependencies. Fully pinned for reproducible exports.
 #
-# numpy MUST stay below 2.4 — numpy 2.4 breaks coremltools' CoreML export.
-# Tested combo: Python 3.13, torch 2.7, coremltools 9.0, numpy 2.3.x.
-numpy>=2.0,<2.4
-torch==2.7.*
-torchvision==0.22.*
+# Two of these are load-bearing for the CoreML export and must not drift:
+#   - numpy < 2.4 (2.4 breaks coremltools' export); 2.3.5 is the last 2.3 release.
+#   - coremltools 9.0 is the validated converter frontend.
+# torch/torchvision are held at the tested 2.7 line (paired versions) that
+# coremltools 9.0 supports; see SECURITY note below before bumping them.
+numpy==2.3.5
+torch==2.7.1
+torchvision==0.22.1
 coremltools==9.0
-pillow
+pillow==11.3.0
 
-# RF-DETR itself. Pinned PyPI release; or install from a local checkout with
-# `pip install -e /path/to/rf-detr` if you need a specific commit.
-rfdetr
+# RF-DETR itself. The converter monkeypatches rfdetr internals (e.g.
+# rfdetr.models.ops...), so keep this pinned to a validated release and re-run an
+# export before bumping. Or install editable from a checkout:
+#   pip install -e /path/to/rf-detr
+rfdetr==1.8.3
+
+# SECURITY / torch: the open Dependabot advisories on torch (CVE-2025-2999 and the
+# related jit.script / lstm_cell memory-corruption cluster, first seen in 2.6.0)
+# have no patched release compatible with coremltools 9.0, and they require passing
+# crafted tensors to those specific ops. This converter never does — it uses
+# torch.jit.trace on the model graph and loads your own checkpoint — so torch is
+# held at the tested 2.7.1 rather than destabilizing the toolchain for a bump that
+# wouldn't clear them. Revisit when a fixed torch lands that coremltools supports.
