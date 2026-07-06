@@ -106,6 +106,32 @@ This is the same I/O as RF-DETR's ONNX export, so existing post-processing
 (sigmoid → per-query top class → threshold → cxcywh→xyxy) decodes either format.
 Output feature names are configurable via the `--*-name` flags.
 
+## Palettization (smaller models)
+
+`--palettize-bits {4,6,8}` k-means-clusters the weights into a lookup table for a
+smaller `.mlpackage` — 6-bit is roughly **2.6× smaller** (e.g. ~52 MB → ~20 MB on
+Nano) and, on the checkpoints we've measured, detection-for-detection equivalent.
+
+Palettization is **lossy**, so the tool won't take "it loaded" for validation.
+Pass real images and it runs an accuracy gate — predicts with the fp16 and the
+palettized model on each, and **fails the export** unless detections match
+(identical count above threshold, top confidence within ±0.02):
+
+```bash
+python rfdetr_to_coreml.py weights.pt \
+    --palettize-bits 6 \
+    --eval-images samples/*.jpg \
+    --eval-conf-threshold 0.5
+```
+
+Without `--eval-images` it still palettizes but prints a loud warning that the
+result was **not** validated. Requires `scikit-learn` (see [Install](#install)).
+
+**Deployment target:** below iOS18 the palettized (LUT) weights may be expanded
+back to float at load — outputs stay correct, but you keep the on-disk size win
+without the runtime memory/bandwidth benefit. Raise `--deployment-target` if you
+need the weights to stay compressed at runtime.
+
 ## Supported variants
 
 `nano`, `small`, `medium`, `base`, `large` via `--variant`.

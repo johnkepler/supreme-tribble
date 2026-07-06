@@ -26,3 +26,9 @@ rfdetr==1.8.3
 # torch.jit.trace on the model graph and loads your own checkpoint — so torch is
 # held at the tested 2.7.1 rather than destabilizing the toolchain for a bump that
 # wouldn't clear them. Revisit when a fixed torch lands that coremltools supports.
+
+# Only needed for --palettize-bits (k-means palette fitting uses sklearn's KMeans).
+# The constraint that actually bites is the numpy ABI, not the sklearn version;
+# 1.9.0 is the release palettization was validated against. Drop this line if you
+# never palettize.
+scikit-learn==1.9.0
