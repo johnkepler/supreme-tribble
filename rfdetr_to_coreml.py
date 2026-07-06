@@ -40,6 +40,14 @@ get the in-memory model back without writing it, so a downstream step can
 post-process it (palettize, add metadata) and save once — no save/reload/re-save
 round-trip.
 
+Palettization: `--palettize-bits {4,6,8}` k-means-clusters the weights for a
+smaller model (6-bit is ~2.6x smaller). It's lossy, so pass `--eval-images` —
+the accuracy gate compares the palettized model against the fp16 one on those
+images and fails the export unless detections match (identical count, top
+confidence within +/-0.02). Without eval images it warns and skips the gate.
+Below iOS18 the LUT weights may expand at load (correct, but less on-device
+benefit). Needs scikit-learn (see requirements.txt).
+
 Limitation: the rank-safe attention rewrite is specialized for single-scale
 decoders (n_levels == 1), which covers RF-DETR Nano/Small. Multi-scale variants
 raise a clear error rather than exporting a wrong model.
@@ -253,10 +261,80 @@ class _Wrap(torch.nn.Module):
         return o[0], o[1]
 
 
+def _decode_detection_scores(logits: np.ndarray, conf_threshold: float) -> np.ndarray:
+    """Per-query top detection scores above threshold, sorted descending.
+
+    Mirrors RF-DETR post-processing: `sigmoid(logits)`, drop the background slot
+    (index 0), take each query's max over the real classes, keep those >=
+    threshold. Returns just the surviving scores (sorted) — enough to compare two
+    models detection-for-detection without depending on box matching.
+    """
+    logits = np.asarray(logits).reshape(-1, logits.shape[-1])  # (num_queries, C+1)
+    scores = 1.0 / (1.0 + np.exp(-logits))
+    per_query_top = scores[:, 1:].max(axis=1)                  # drop background slot 0
+    kept = per_query_top[per_query_top >= conf_threshold]
+    return np.sort(kept)[::-1]
+
+
+def _palettize_and_gate(fp16_model, nbits: int, eval_images, conf_threshold: float,
+                        deploy_target, resolution: int, image_name: str,
+                        logits_name: str):
+    """Palettize `fp16_model` to `nbits` (k-means) and, if eval images are given,
+    fail the build unless detections match the fp16 model within tolerance.
+
+    The gate compares the two models on the *same* input, so absolute
+    preprocessing fidelity doesn't matter — only the fp16-vs-palettized delta.
+    Parity bar (field-tested): identical detection count per image and top
+    confidences agreeing within +/-0.02. Runs predictions, so it needs a CoreML
+    runtime (macOS), same as the reload+predict verify path.
+    """
+    import coremltools.optimize.coreml as cto
+    print(f"[export] palettizing weights to {nbits}-bit (k-means) ...")
+    config = cto.OptimizationConfig(
+        global_config=cto.OpPalettizerConfig(mode="kmeans", nbits=nbits))
+    pal = cto.palettize_weights(fp16_model, config)
+
+    if deploy_target < ct.target.iOS18:
+        print(f"[export] note: {nbits}-bit weights store as constexpr_lut ops; on "
+              f"deployment targets below iOS18 the runtime may expand them at load "
+              f"(correct results, reduced on-device size/bandwidth benefit).")
+
+    if not eval_images:
+        print("[warn] palettized WITHOUT an accuracy gate — pass --eval-images to "
+              "validate that lossy compression preserved detections.", file=sys.stderr)
+        return pal
+
+    from PIL import Image
+    print(f"[export] accuracy gate: comparing fp16 vs {nbits}-bit on "
+          f"{len(eval_images)} image(s) (threshold={conf_threshold}, tol=+/-0.02) ...")
+    for path in eval_images:
+        img = Image.open(path).convert("RGB").resize((resolution, resolution))
+        ref = _decode_detection_scores(fp16_model.predict({image_name: img})[logits_name],
+                                       conf_threshold)
+        got = _decode_detection_scores(pal.predict({image_name: img})[logits_name],
+                                       conf_threshold)
+        if len(ref) != len(got):
+            raise SystemExit(
+                f"[error] palettization accuracy gate FAILED on {path}: detection "
+                f"count {len(got)} (palettized) != {len(ref)} (fp16) at "
+                f"threshold {conf_threshold}. Try more bits or --palettize-bits 0.")
+        max_delta = float(np.abs(ref - got).max()) if len(ref) else 0.0
+        if max_delta > 0.02:
+            raise SystemExit(
+                f"[error] palettization accuracy gate FAILED on {path}: top "
+                f"confidence drifted by {max_delta:.3f} (> 0.02 tolerance). "
+                f"Try more bits or --palettize-bits 0.")
+        print(f"  {Path(path).name}: {len(got)} detections, max|Δconf|={max_delta:.3f} OK")
+    print("[export] accuracy gate PASSED")
+    return pal
+
+
 def convert(weights: Path, out: Path, variant: str, resolution: int, num_classes: int,
             deploy_target, image_name: str, boxes_name: str, logits_name: str,
             verify: bool, class_names: list[str] | None = None,
-            save: bool = True) -> "ct.models.MLModel":
+            save: bool = True, palettize_bits: int = 0,
+            eval_images: list[Path] | None = None,
+            eval_conf_threshold: float = 0.5) -> "ct.models.MLModel":
     """Convert an RF-DETR checkpoint to a CoreML mlprogram and return the model.
 
     With ``save=True`` (default) the model is written to ``out`` before returning,
@@ -339,6 +417,16 @@ def convert(weights: Path, out: Path, variant: str, resolution: int, num_classes
         convert_to="mlprogram",
     )
     print(f"[export] ct.convert done in {time.time() - t0:.1f}s")
+
+    # Optional palettization + accuracy gate. Do this BEFORE stamping metadata:
+    # palettize_weights returns a fresh MLModel that doesn't carry over
+    # user_defined_metadata / short_description, so metadata must be set on the
+    # final (palettized) model below.
+    if palettize_bits:
+        mlmodel = _palettize_and_gate(mlmodel, palettize_bits, eval_images,
+                                      eval_conf_threshold, deploy_target, resolution,
+                                      image_name, logits_name)
+
     mlmodel.short_description = (
         f"RF-DETR {variant} ({num_classes} classes). {resolution}x{resolution} RGB. "
         f"'{boxes_name}'=cxcywh norm [0,1]; '{logits_name}' pre-sigmoid "
@@ -400,6 +488,15 @@ def main() -> int:
     p.add_argument("--logits-name", default="logits", help="name of the logits output feature")
     p.add_argument("--no-verify", action="store_true",
                    help="skip the reload + predict validation pass")
+    p.add_argument("--palettize-bits", type=int, default=0, choices=[0, 4, 6, 8],
+                   help="k-means weight palettization for a smaller model (0 = off, keep "
+                        "fp16). Lossy — pass --eval-images to validate detections are "
+                        "preserved (e.g. 6-bit is ~2.6x smaller).")
+    p.add_argument("--eval-images", nargs="+", type=Path, default=None,
+                   help="real images the palettization accuracy gate runs on; without them "
+                        "palettization is applied but NOT validated (loud warning).")
+    p.add_argument("--eval-conf-threshold", type=float, default=0.5,
+                   help="detection confidence threshold used by the palettization gate")
     args = p.parse_args()
 
     if not args.weights.exists():
@@ -465,6 +562,9 @@ def main() -> int:
         logits_name=args.logits_name,
         verify=not args.no_verify,
         class_names=class_names,
+        palettize_bits=args.palettize_bits,
+        eval_images=args.eval_images,
+        eval_conf_threshold=args.eval_conf_threshold,
     )
     return 0
 
