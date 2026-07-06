@@ -6,7 +6,7 @@
 # torch/torchvision are held at the tested 2.7 line (paired versions) that
 # coremltools 9.0 supports; see SECURITY note below before bumping them.
 numpy==2.3.5
-torch==2.7.1
+torch==2.12.1
 torchvision==0.22.1
 coremltools==9.0
 pillow==11.3.0
