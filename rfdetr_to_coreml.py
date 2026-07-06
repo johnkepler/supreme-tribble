@@ -35,6 +35,11 @@ Quickstart:
 variant's native resolution; class count inferred from the checkpoint), so for a
 standard Small checkpoint just pass the weights. Run `--help` for all options.
 
+Library use: `convert(...)` returns the CoreML `MLModel`. Pass `save=False` to
+get the in-memory model back without writing it, so a downstream step can
+post-process it (palettize, add metadata) and save once — no save/reload/re-save
+round-trip.
+
 Limitation: the rank-safe attention rewrite is specialized for single-scale
 decoders (n_levels == 1), which covers RF-DETR Nano/Small. Multi-scale variants
 raise a clear error rather than exporting a wrong model.
@@ -250,7 +255,17 @@ class _Wrap(torch.nn.Module):
 
 def convert(weights: Path, out: Path, variant: str, resolution: int, num_classes: int,
             deploy_target, image_name: str, boxes_name: str, logits_name: str,
-            verify: bool, class_names: list[str] | None = None) -> None:
+            verify: bool, class_names: list[str] | None = None,
+            save: bool = True) -> "ct.models.MLModel":
+    """Convert an RF-DETR checkpoint to a CoreML mlprogram and return the model.
+
+    With ``save=True`` (default) the model is written to ``out`` before returning,
+    preserving the original behaviour. With ``save=False`` nothing is written and
+    the in-memory ``MLModel`` is returned so a caller can post-process it (e.g.
+    palettize, add metadata) and save once — no save/reload/re-save round-trip.
+    ``verify`` runs the reload-or-predict check against the saved model when
+    ``save`` is set, otherwise against the in-memory model.
+    """
     _register_scalar_cast_ops()
     model_cls, _ = _resolve_variant(variant)
 
@@ -334,13 +349,14 @@ def convert(weights: Path, out: Path, variant: str, resolution: int, num_classes
         # iOS can read them via MLModel.modelDescription.metadata[.creatorDefinedKey].
         mlmodel.user_defined_metadata["classes"] = ",".join(class_names)
         print(f"[export] embedded {len(class_names)} class label(s) in metadata['classes']")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    mlmodel.save(str(out))
-    print(f"[export] saved {out}")
+    if save:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        mlmodel.save(str(out))
+        print(f"[export] saved {out}")
 
     if verify:
         print("[export] validating: reload + predict ...")
-        loaded = ct.models.MLModel(str(out))
+        loaded = ct.models.MLModel(str(out)) if save else mlmodel
         spec = loaded.get_spec()
         print("  inputs :", [(i.name, i.type.WhichOneof("Type")) for i in spec.description.input])
         print("  outputs:", [o.name for o in spec.description.output])
@@ -353,6 +369,8 @@ def convert(weights: Path, out: Path, variant: str, resolution: int, num_classes
         for k, v in pred.items():
             print(f"  out {k}: shape={getattr(v, 'shape', type(v).__name__)}")
         print("[export] CoreML validation OK")
+
+    return mlmodel
 
 
 def main() -> int:
@@ -371,8 +389,10 @@ def main() -> int:
                    help="trained class count (default: inferred from the checkpoint's class head)")
     p.add_argument("--class-names", default=None,
                    help="comma-separated class names in logit order, background excluded "
-                        "(default: read from the checkpoint if recorded). Embedded in the "
-                        ".mlpackage metadata under 'classes'.")
+                        "(default: read from the checkpoint if recorded). Empty entries are "
+                        "kept as positional gaps for sparse label spaces (e.g. COCO's 90-slot "
+                        "layout: 'person,,,...'). Embedded in the .mlpackage metadata under "
+                        "'classes'.")
     p.add_argument("--deployment-target", choices=sorted(_DEPLOY_TARGETS), default="iOS16",
                    help="minimum CoreML deployment target")
     p.add_argument("--image-name", default="image", help="name of the image input feature")
@@ -410,7 +430,10 @@ def main() -> int:
     # the count against num_classes — a mismatch means the labels are wrong, so
     # warn and drop them rather than embed misleading metadata.
     if args.class_names is not None:
-        class_names = [s.strip() for s in args.class_names.split(",") if s.strip()]
+        # Keep empty entries: they're positional gaps for sparse label spaces
+        # (e.g. COCO's 90-slot logit layout has 10 unused ids). The count check
+        # below — not filtering — is what guards against a genuine mismatch.
+        class_names = [s.strip() for s in args.class_names.split(",")]
         names_source = "--class-names"
     else:
         class_names = infer_class_names(args.weights)
@@ -422,7 +445,11 @@ def main() -> int:
                   f"--num-classes to fix)", file=sys.stderr)
             class_names = None
         else:
-            print(f"[info] class names ({names_source}): {', '.join(class_names)}")
+            populated = sum(1 for n in class_names if n)
+            detail = (f"{len(class_names)} slots ({populated} populated)"
+                      if populated != len(class_names)
+                      else ", ".join(class_names))
+            print(f"[info] class names ({names_source}): {detail}")
 
     out = args.output or args.weights.with_suffix(".mlpackage")
 
