@@ -74,6 +74,18 @@ skips embedding rather than ship wrong labels. Embedded names land under the
 metadata key `classes` (comma-joined), readable on-device via
 `MLModel.modelDescription.metadata[.creatorDefinedKey]`.
 
+**Sparse label spaces:** empty entries are kept as positional gaps, so a layout
+like COCO's — 90 logit slots with 10 unused ids — maps straight through:
+
+```bash
+python rfdetr_to_coreml.py weights.pt \
+    --num-classes 90 \
+    --class-names "person,bicycle,car,...,,,...,toothbrush"  # gaps preserved
+```
+
+The name for logit index *i* sits at entry *i-1* (index 0 is background, no
+entry). The count must still equal `num_classes` (90 here), so pass the gaps.
+
 ### Important: resolution must match training
 
 `--resolution` defaults to the variant's *native* config resolution (Nano 384,
@@ -104,6 +116,29 @@ raise a clear error rather than emitting a silently-wrong model. Extending to
 multi-scale means generalizing `_single_scale_deform_attn_forward` to loop over levels.
 
 **Note:** If you want to convert all variants incl. Medium/Base/Large, check out this recent repo: landchenxuan/rf-detr-to-coreml
+
+## Using as a library
+
+`convert(...)` returns the CoreML `MLModel`. Pass `save=False` to get the
+in-memory model without writing it, then post-process (e.g. palettize, add
+metadata) and save once — no save/reload/re-save round-trip:
+
+```python
+import coremltools as ct
+import coremltools.optimize.coreml as cto
+from rfdetr_to_coreml import convert, infer_num_classes
+
+model = convert(
+    weights="weights.pt", out=None, variant="nano", resolution=384,
+    num_classes=infer_num_classes("weights.pt") or 90,
+    deploy_target=ct.target.iOS16,
+    image_name="image", boxes_name="boxes", logits_name="logits",
+    verify=False, save=False,          # <- return the MLModel, don't write it
+)
+model = cto.palettize_weights(
+    model, cto.OptimizationConfig(cto.OpPalettizerConfig(mode="kmeans", nbits=6)))
+model.save("detector.mlpackage")
+```
 
 ## License
 
