@@ -17,7 +17,7 @@ pillow==12.3.0
 # rfdetr.models.ops...), so keep this pinned to a validated release and re-run an
 # export before bumping. Or install editable from a checkout:
 #   pip install -e /path/to/rf-detr
-rfdetr==1.8.3
+rfdetr==1.9.0
 
 # SECURITY / torch: the open Dependabot advisories on torch (CVE-2025-2999 and the
 # related jit.script / lstm_cell memory-corruption cluster, first seen in 2.6.0)
